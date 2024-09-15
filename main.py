@@ -1,13 +1,14 @@
 import subprocess
 import time
-from telegram import Update, Bot
-from telegram import InputMediaPhoto
+from telegram import Update, Bot, InputMediaPhoto, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, filters, MessageHandler, ContextTypes
 import requests
 import json
 import logging
+import os
+import hashlib
+import asyncio
 
 # Set up logging
 logging.basicConfig(
@@ -25,6 +26,7 @@ application = Application.builder().token(TOKEN).build()
 manual_activity = None
 previous_artwork_identifier = None
 last_used_image_path = "out.jpg"
+previous_media_info = None
 
 # Function to get currently playing media
 def get_currently_playing_media():
@@ -46,16 +48,12 @@ def get_currently_playing_media():
         title = media_info.get("kMRMediaRemoteNowPlayingInfoTitle", "Something... IDK")
         album = media_info.get("kMRMediaRemoteNowPlayingInfoAlbum", " ")
         artist = media_info.get("kMRMediaRemoteNowPlayingInfoArtist", "Unknown Artist")
-        duration = media_info.get("kMRMediaRemoteNowPlayingInfoDuration", "0")
-        elapsed_time = media_info.get("kMRMediaRemoteNowPlayingInfoElapsedTime", "0")
         playback_rate = media_info.get("kMRMediaRemoteNowPlayingInfoPlaybackRate", "0")
         artwork_identifier = media_info.get("kMRMediaRemoteNowPlayingInfoArtworkIdentifier", None)
 
         title = title.split(";", 1)[0].replace('"', '')
         album = album.split(";", 1)[0].replace('"', '')
         artist = artist.split(";", 1)[0].replace('"', '')
-        duration = duration.split(";", 1)[0].replace('"', '')
-        elapsed_time = elapsed_time.split(";", 1)[0].replace('"', '')
         playback_rate = playback_rate.split(";", 1)[0].replace('"', '')
 
         # Determine play or pause emoji
@@ -63,37 +61,7 @@ def get_currently_playing_media():
 
         title = f"{play_pause_emoji} {title} - {album}\n🎤 {artist}"
 
-        try:
-            duration = float(duration)
-            elapsed_time = float(elapsed_time)
-        except ValueError:
-            duration = 0
-            elapsed_time = 0
-
-        # Convert the time to hh:mm:ss format
-        def format_time(seconds):
-            h = int(seconds // 3600)
-            m = int((seconds % 3600) // 60)
-            s = int(seconds % 60)
-            return f"{h:02}:{m:02}:{s:02}"
-
-        if elapsed_time == 0:
-            elapsed_time_str = ""
-        else:
-            elapsed_time_str = format_time(elapsed_time)
-        duration_str = format_time(duration)
-
-        # Calculate progress
-        progress = (elapsed_time / duration) * 100 if duration > 0 else 0
-
-        # Create a text-based progress bar
-        progress_bar_length = 20
-        filled_length = int(progress_bar_length * progress // 100)
-        progress_bar = '≣' * filled_length + '⋯' * (progress_bar_length - filled_length)
-
-        progress_info = f"⏳{elapsed_time_str} / {duration_str} \n\n{progress_bar} ({progress:.2f}%)"
-
-        return f"{title}\n{progress_info}", artwork_identifier
+        return f"{title}", artwork_identifier
     except Exception as e:
         logging.error(f"Error parsing media info: {e}")
         return f"Error parsing media info: {e}", None
@@ -108,6 +76,72 @@ def extract_and_save_album_art(filename="out.jpg"):
     except subprocess.CalledProcessError as e:
         logging.error(f"Error extracting and saving album art: {e}")
         return None
+
+# Function to send a message with retry logic
+async def send_message(chat_id, message, context, image=None):
+    retries = 5
+    for i in range(retries):
+        try:
+            if image:
+                return await context.bot.send_photo(chat_id=chat_id, photo=open(image, 'rb'), caption=message)
+            else:
+                return await context.bot.send_message(chat_id=chat_id, text=message)
+        except Exception as e:
+            logging.error(f"Error sending message: {e}")
+            if i < retries - 1:
+                await asyncio.sleep(2 ** i)  # Exponential backoff
+            else:
+                raise
+
+# Define the activity command
+async def activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global previous_artwork_identifier, last_used_image_path, previous_media_info
+    try:
+        chat_id = update.effective_chat.id
+        media_info, artwork_identifier = get_currently_playing_media()
+        
+        # Check if the new media info or artwork identifier is different from the previous one
+        if media_info != previous_media_info or artwork_identifier != previous_artwork_identifier:
+            previous_media_info = media_info
+            previous_artwork_identifier = artwork_identifier
+            album_art_path = extract_and_save_album_art()
+            
+            message = await send_message(chat_id, media_info, context, image=album_art_path)
+        else:
+            message = await send_message(chat_id, media_info, context, image=last_used_image_path)
+        
+        # Start the update loop
+        asyncio.create_task(update_activity_loop(context, chat_id, message.message_id))
+    except Exception as e:
+        logging.error(f"Error in activity command: {e}")
+
+# Function to update the activity message every 10 seconds
+async def update_activity_loop(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int):
+    global previous_artwork_identifier, last_used_image_path, previous_media_info
+    while True:
+        media_info, artwork_identifier = get_currently_playing_media()
+        # logging.info(media_info)
+        try:
+            
+            # Check if the new media info or artwork identifier is different from the previous one
+            if artwork_identifier != previous_artwork_identifier or media_info != previous_media_info:
+                previous_media_info = media_info
+                previous_artwork_identifier = artwork_identifier
+                album_art_path = extract_and_save_album_art()
+                
+                if album_art_path:
+                    last_used_image_path = album_art_path
+                    media = InputMediaPhoto(media=open(album_art_path, 'rb'), caption=media_info)
+                else:
+                    media = InputMediaPhoto(media=open(last_used_image_path, 'rb'), caption=media_info)
+                
+                await context.bot.edit_message_media(chat_id=chat_id, message_id=message_id, media=media)
+                await context.bot.edit_message_caption(chat_id=chat_id, message_id=message_id, caption=media_info)
+        except Exception as e:
+            logging.error(media_info)
+            logging.error(f"Error in update_activity_loop: {e}")
+        
+        await asyncio.sleep(10)
 
 # Define the start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -126,28 +160,6 @@ async def cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_photo(chat_id=chat_id, photo=cat_url)
     except Exception as e:
         logging.error(f"Error in cat command: {e}")
-
-# Define the activity command
-async def activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global previous_artwork_identifier, last_used_image_path
-    try:
-        chat_id = update.effective_chat.id
-        media_info, artwork_identifier = get_currently_playing_media()
-        
-        # Check if the new artwork identifier is different from the previous one
-        if artwork_identifier != previous_artwork_identifier:
-            previous_artwork_identifier = artwork_identifier
-            album_art_path = extract_and_save_album_art()
-            
-            if album_art_path:
-                last_used_image_path = album_art_path
-                await context.bot.send_photo(chat_id=chat_id, photo=open(album_art_path, 'rb'), caption=media_info)
-            else:
-                await context.bot.send_message(chat_id=chat_id, text=media_info)
-        else:
-            await context.bot.send_photo(chat_id=chat_id, photo=open(last_used_image_path, 'rb'), caption=media_info)
-    except Exception as e:
-        logging.error(f"Error in activity command: {e}")
 
 # Define the set command
 async def set_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
