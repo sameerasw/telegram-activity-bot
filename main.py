@@ -19,6 +19,7 @@ with open(".env", "r") as f:
     TOKEN = lines[0].strip()
     GEMINI_API_KEY = lines[1].strip()
     ALLOWED_USERNAME = lines[2].strip()  # Get the allowed username from the .env file
+    NAME = lines[3].strip()
 
 application = Application.builder().token(TOKEN).build()
 manual_activity = None
@@ -60,7 +61,7 @@ def get_currently_playing_media():
         # Determine play or pause emoji
         play_pause_emoji = "▶️" if playback_rate == "1" else "⏸️"
 
-        title = f"{play_pause_emoji} {title} - {album}\n🎤 {artist}"
+        title = NAME + f" is playing,\n{play_pause_emoji} {title} - {album}\n🎤 {artist}"
 
         return f"{title}", artwork_identifier
     except Exception as e:
@@ -123,7 +124,7 @@ async def activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Function to update the activity message every 10 seconds
 async def update_activity_loop(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int):
-    global previous_artwork_identifier, last_used_image_path, previous_media_info, previous_manual_activity, last_sent_manual_activity
+    global previous_artwork_identifier, last_used_image_path, previous_media_info, previous_manual_activity, last_sent_manual_activity, manual_activity
     sleep_time = 10
     loop = True
     while loop:
@@ -137,13 +138,13 @@ async def update_activity_loop(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
                         album_art_path = "working.jpeg"
                     elif manual_activity == "Sleeping":
                         album_art_path = "sleeping.jpeg"
-                    elif manual_activity == "Do not Disturb":
+                    elif manual_activity == "in do not disturb mode":
                         album_art_path = "dnd.jpeg"
                     else:
                         album_art_path = "logo.jpeg"
-                    media = InputMediaPhoto(media=open(album_art_path, 'rb'), caption=manual_activity)
+                    media = InputMediaPhoto(media=open(album_art_path, 'rb'), caption=NAME + " is " + manual_activity)
                     await context.bot.edit_message_media(chat_id=chat_id, message_id=message_id, media=media)
-                    await context.bot.edit_message_caption(chat_id=chat_id, message_id=message_id, caption=manual_activity)
+                    await context.bot.edit_message_caption(chat_id=chat_id, message_id=message_id, caption=NAME + " is " + manual_activity)
                     last_sent_manual_activity = manual_activity  # Update the last sent manual activity
                     sleep_time = 60
                 loop = False
@@ -234,8 +235,14 @@ async def set_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user.username != ALLOWED_USERNAME:
             await context.bot.send_message(chat_id=chat_id, text="You are not authorized to use this command.")
             return
+        
+        if (update.message.text.split(' ', 1)[1] == "w"):
+            manual_activity = "Working"
+        elif (update.message.text.split(' ', 1)[1] == "s"):
+            manual_activity = "Sleeping"
+        elif (update.message.text.split(' ', 1)[1] == "dnd"):
+            manual_activity = "in do not disturb mode"
 
-        manual_activity = update.message.text.split(' ', 1)[1]
         await context.bot.send_message(chat_id=chat_id, text=f"Activity set to: {manual_activity}")
     except Exception as e:
         logging.error(f"Error in set_activity command: {e}")
