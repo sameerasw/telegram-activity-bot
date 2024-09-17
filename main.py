@@ -98,8 +98,15 @@ async def send_message(chat_id, message, context, image=None):
 # Define the activity command
 async def activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global previous_artwork_identifier, last_used_image_path, previous_media_info, message_id_to_update
+    chat_id = update.effective_chat.id
+
+
+    # Check if the user is allowed to execute this command
+    if update.effective_user.username != ALLOWED_USERNAME:
+        await context.bot.send_message(chat_id=chat_id, text="You are not authorized to use this command, Use /info@live_activity_bot isntead :)")
+        return
+    
     try:
-        chat_id = update.effective_chat.id
         media_info, artwork_identifier = get_currently_playing_media()
 
         # Check if the new media info or artwork identifier is different from the previous one
@@ -222,6 +229,21 @@ async def cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error(f"Error in cat command: {e}")
 
+# Define the info_activity command
+async def info_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        chat_id = update.effective_chat.id
+        media_info, artwork_identifier = get_currently_playing_media()
+
+        # Send the current activity once without looping
+        if manual_activity:
+            message = await send_message(chat_id, manual_activity, context)
+        else:
+            album_art_path = extract_and_save_album_art()
+            message = await send_message(chat_id, media_info, context, image=album_art_path)
+    except Exception as e:
+        logging.error(f"Error in info_activity command: {e}")
+
 # Define the set command
 async def set_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -291,6 +313,7 @@ application.add_handler(CommandHandler("activity", activity))
 application.add_handler(CommandHandler("set", set_activity))
 application.add_handler(CommandHandler("clear", clear_activity))
 application.add_handler(CommandHandler("chat", chat_with_gemini))
+application.add_handler(CommandHandler("info", info_activity))
 
 # Start the Bot
 print("Bot started!")
